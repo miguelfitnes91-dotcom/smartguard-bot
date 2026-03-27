@@ -15,6 +15,9 @@ from telegram.ext import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 
+if not TOKEN:
+    raise ValueError("BOT_TOKEN não encontrado nas variáveis de ambiente.")
+
 # =========================
 # BANCO DE DADOS
 # =========================
@@ -48,6 +51,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def run_http_server():
     port = int(os.environ.get("PORT", 10000))
+    print(f"Servidor HTTP iniciado na porta {port}")
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
@@ -146,9 +150,11 @@ def limpar_banco():
 # COMANDOS
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("Comando /start recebido")
     await update.message.reply_text(
         "✅ SmartGuard BRAINY online.\n\n"
         "Comandos disponíveis:\n"
+        "/ping\n"
         "/hoje\n"
         "/semana\n"
         "/ranking\n"
@@ -157,7 +163,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("Comando /ping recebido")
+    await update.message.reply_text("🏓 Pong! Bot online.")
+
+
 async def hoje(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("Comando /hoje recebido")
     inicio = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     logs = buscar_logs_periodo(inicio.isoformat())
 
@@ -171,7 +183,7 @@ async def hoje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for _, _, tipo, _, _, _ in logs:
         contagem_tipos[tipo] = contagem_tipos.get(tipo, 0) + 1
 
-    linhas = [f"📊 Relatório de hoje", f"Total de logs: {total}", ""]
+    linhas = ["📊 Relatório de hoje", f"Total de logs: {total}", ""]
     for tipo, qtd in sorted(contagem_tipos.items(), key=lambda x: x[1], reverse=True):
         linhas.append(f"- {tipo}: {qtd}")
 
@@ -179,6 +191,7 @@ async def hoje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def semana(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("Comando /semana recebido")
     inicio = datetime.now() - timedelta(days=7)
     logs = buscar_logs_periodo(inicio.isoformat())
 
@@ -193,7 +206,7 @@ async def semana(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chave = f"{equipamento_id} | {empresa}"
         por_equipamento[chave] = por_equipamento.get(chave, 0) + 1
 
-    linhas = [f"📈 Relatório dos últimos 7 dias", f"Total de logs: {total}", ""]
+    linhas = ["📈 Relatório dos últimos 7 dias", f"Total de logs: {total}", ""]
 
     for chave, qtd in sorted(por_equipamento.items(), key=lambda x: x[1], reverse=True)[:10]:
         linhas.append(f"- {chave}: {qtd}")
@@ -202,6 +215,7 @@ async def semana(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("Comando /ranking recebido")
     inicio = (datetime.now() - timedelta(days=7)).isoformat()
     dados = buscar_ranking(inicio)
 
@@ -218,6 +232,7 @@ async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def equipamento(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("Comando /equipamento recebido")
     if not context.args:
         await update.message.reply_text("Uso: /equipamento SG-0001")
         return
@@ -238,6 +253,7 @@ async def equipamento(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def limparbd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("Comando /limparbd recebido")
     limpar_banco()
     await update.message.reply_text("🧹 Banco de dados limpo com sucesso.")
 
@@ -250,6 +266,8 @@ async def receber(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     texto = update.message.text
+    print(f"Mensagem recebida: {texto[:120]}")
+
     logs = parse_sglog_lines(texto)
 
     if not logs:
@@ -269,20 +287,31 @@ async def receber(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
+# ERROS
+# =========================
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    print("ERRO NO BOT:")
+    print(context.error)
+
+
+# =========================
 # MAIN
 # =========================
 if __name__ == "__main__":
+    print("Iniciando SmartGuard BRAINY...")
     threading.Thread(target=run_http_server, daemon=True).start()
 
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ping", ping))
     app.add_handler(CommandHandler("hoje", hoje))
     app.add_handler(CommandHandler("semana", semana))
     app.add_handler(CommandHandler("ranking", ranking))
     app.add_handler(CommandHandler("equipamento", equipamento))
     app.add_handler(CommandHandler("limparbd", limparbd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receber))
+    app.add_error_handler(error_handler)
 
     print("Bot rodando...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
