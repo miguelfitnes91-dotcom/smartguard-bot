@@ -23,7 +23,7 @@ cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS logs (
-    id TEXT,
+    equipamento_id TEXT,
     empresa TEXT,
     tipo TEXT,
     valor REAL,
@@ -43,7 +43,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
 
     def log_message(self, format, *args):
-        return  # evita poluir o log
+        return
 
 
 def run_http_server():
@@ -55,28 +55,35 @@ def run_http_server():
 # =========================
 # PARSER SGLOG
 # =========================
-def parse_sglog(texto):
+def parse_sglog_lines(texto):
+    logs = []
+
     for linha in texto.splitlines():
-        if linha.startswith("SGLOG|"):
-            partes = linha.strip().split("|")
+        linha = linha.strip()
+        if not linha.startswith("SGLOG|"):
+            continue
 
-            if len(partes) < 6:
-                return None
+        partes = linha.split("|")
+        if len(partes) < 6:
+            continue
 
-            try:
-                valor = float(partes[4])
-            except ValueError:
-                return None
+        try:
+            valor = float(partes[4])
+        except ValueError:
+            continue
 
-            return {
-                "id": partes[1],
-                "empresa": partes[2],
-                "tipo": partes[3],
-                "valor": valor,
-                "unidade": partes[5],
-                "timestamp": partes[6] if len(partes) > 6 else datetime.now().isoformat()
-            }
-    return None
+        timestamp = partes[6] if len(partes) > 6 else datetime.now().isoformat()
+
+        logs.append({
+            "equipamento_id": partes[1],
+            "empresa": partes[2],
+            "tipo": partes[3],
+            "valor": valor,
+            "unidade": partes[5],
+            "timestamp": timestamp,
+        })
+
+    return logs
 
 
 # =========================
@@ -84,9 +91,10 @@ def parse_sglog(texto):
 # =========================
 def salvar_log(dados):
     cursor.execute("""
-        INSERT INTO logs VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO logs (equipamento_id, empresa, tipo, valor, unidade, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?)
     """, (
-        dados["id"],
+        dados["equipamento_id"],
         dados["empresa"],
         dados["tipo"],
         dados["valor"],
@@ -98,7 +106,7 @@ def salvar_log(dados):
 
 def buscar_logs_periodo(inicio_iso):
     cursor.execute("""
-        SELECT id, empresa, tipo, valor, unidade, timestamp
+        SELECT equipamento_id, empresa, tipo, valor, unidade, timestamp
         FROM logs
         WHERE timestamp >= ?
         ORDER BY timestamp DESC
@@ -106,27 +114,32 @@ def buscar_logs_periodo(inicio_iso):
     return cursor.fetchall()
 
 
-def buscar_logs_equipamento(equip_id, limite=20):
+def buscar_logs_equipamento(equipamento_id, limite=20):
     cursor.execute("""
-        SELECT id, empresa, tipo, valor, unidade, timestamp
+        SELECT equipamento_id, empresa, tipo, valor, unidade, timestamp
         FROM logs
-        WHERE id = ?
+        WHERE equipamento_id = ?
         ORDER BY timestamp DESC
         LIMIT ?
-    """, (equip_id, limite))
+    """, (equipamento_id, limite))
     return cursor.fetchall()
 
 
 def buscar_ranking(inicio_iso):
     cursor.execute("""
-        SELECT id, empresa, COUNT(*) as total
+        SELECT equipamento_id, empresa, COUNT(*) as total
         FROM logs
         WHERE timestamp >= ?
-        GROUP BY id, empresa
-        ORDER BY total DESC, id ASC
+        GROUP BY equipamento_id, empresa
+        ORDER BY total DESC, equipamento_id ASC
         LIMIT 10
     """, (inicio_iso,))
     return cursor.fetchall()
+
+
+def limpar_banco():
+    cursor.execute("DELETE FROM logs")
+    conn.commit()
 
 
 # =========================
@@ -139,7 +152,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/hoje\n"
         "/semana\n"
         "/ranking\n"
-        "/equipamento SG-0001"
+        "/equipamento SG-0001\n"
+        "/limparbd"
     )
 
 
@@ -152,8 +166,8 @@ async def hoje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     total = len(logs)
-
     contagem_tipos = {}
+
     for _, _, tipo, _, _, _ in logs:
         contagem_tipos[tipo] = contagem_tipos.get(tipo, 0) + 1
 
@@ -175,8 +189,8 @@ async def semana(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = len(logs)
     por_equipamento = {}
 
-    for equip_id, empresa, tipo, valor, unidade, timestamp in logs:
-        chave = f"{equip_id} | {empresa}"
+    for equipamento_id, empresa, _, _, _, _ in logs:
+        chave = f"{equipamento_id} | {empresa}"
         por_equipamento[chave] = por_equipamento.get(chave, 0) + 1
 
     linhas = [f"📈 Relatório dos últimos 7 dias", f"Total de logs: {total}", ""]
@@ -197,8 +211,8 @@ async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     linhas = ["🏆 Ranking de equipamentos com mais alertas (7 dias)", ""]
 
-    for pos, (equip_id, empresa, total) in enumerate(dados, start=1):
-        linhas.append(f"{pos}. {equip_id} | {empresa} — {total}")
+    for pos, (equipamento_id, empresa, total) in enumerate(dados, start=1):
+        linhas.append(f"{pos}. {equipamento_id} | {empresa} — {total}")
 
     await update.message.reply_text("\n".join(linhas))
 
@@ -208,19 +222,24 @@ async def equipamento(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Uso: /equipamento SG-0001")
         return
 
-    equip_id = context.args[0].strip()
-    logs = buscar_logs_equipamento(equip_id)
+    equipamento_id = context.args[0].strip()
+    logs = buscar_logs_equipamento(equipamento_id)
 
     if not logs:
-        await update.message.reply_text(f"📭 Nenhum log encontrado para {equip_id}.")
+        await update.message.reply_text(f"📭 Nenhum log encontrado para {equipamento_id}.")
         return
 
-    linhas = [f"🛠 Histórico do equipamento {equip_id}", ""]
+    linhas = [f"🛠 Histórico do equipamento {equipamento_id}", ""]
 
     for _, empresa, tipo, valor, unidade, timestamp in logs[:10]:
         linhas.append(f"{timestamp[:19]} | {tipo} | {valor} {unidade} | {empresa}")
 
     await update.message.reply_text("\n".join(linhas))
+
+
+async def limparbd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    limpar_banco()
+    await update.message.reply_text("🧹 Banco de dados limpo com sucesso.")
 
 
 # =========================
@@ -231,16 +250,21 @@ async def receber(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     texto = update.message.text
-    dados = parse_sglog(texto)
+    logs = parse_sglog_lines(texto)
 
-    if not dados:
+    if not logs:
         return
 
-    salvar_log(dados)
+    respostas = []
+
+    for dados in logs:
+        salvar_log(dados)
+        respostas.append(
+            f"{dados['equipamento_id']} | {dados['tipo']} | {dados['valor']} {dados['unidade']}"
+        )
 
     await update.message.reply_text(
-        f"✅ Log registrado\n"
-        f"{dados['id']} | {dados['tipo']} | {dados['valor']} {dados['unidade']}"
+        "✅ Logs registrados\n" + "\n".join(respostas)
     )
 
 
@@ -257,6 +281,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("semana", semana))
     app.add_handler(CommandHandler("ranking", ranking))
     app.add_handler(CommandHandler("equipamento", equipamento))
+    app.add_handler(CommandHandler("limparbd", limparbd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receber))
 
     print("Bot rodando...")
